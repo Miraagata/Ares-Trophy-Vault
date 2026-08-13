@@ -1,0 +1,43 @@
+  app.post("/api/upload-trophy-zip", upload.single("saveZip"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "Nenhum arquivo .ZIP enviado." });
+      }
+
+      const zip = new JSZip();
+      await zip.loadAsync(req.file.buffer);
+
+      const tropconfFile = zip.file("TROPCONF.SFM") || zip.file("TROPDIR/TROPCONF.SFM");
+      const paramsfoFile = zip.file("PARAM.SFO") || zip.file("TROPDIR/PARAM.SFO");
+      const tropusrFile = zip.file("TROPUSR.DAT") || zip.file("TROPDIR/TROPUSR.DAT");
+
+      if (!tropconfFile || !paramsfoFile || !tropusrFile) {
+        return res.status(400).json({ error: "O arquivo ZIP não contém os arquivos necessários (TROPCONF.SFM, PARAM.SFO, TROPUSR.DAT)." });
+      }
+
+      const tropconfBuffer = await tropconfFile.async("nodebuffer");
+      const paramsfoBuffer = await paramsfoFile.async("nodebuffer");
+      const tropusrBuffer = await tropusrFile.async("nodebuffer");
+
+      const profile = parsePARAMSFO(paramsfoBuffer);
+      let trophies = parseTROPCONF(tropconfBuffer);
+      trophies = parseTROPUSR(tropusrBuffer, trophies);
+
+      // Extract images
+      for (const trophy of trophies) {
+        // TROP000.PNG
+        const idStr = trophy.id.toString().padStart(3, '0');
+        const imgFile = zip.file(`TROP${idStr}.PNG`) || zip.file(`TROPDIR/TROP${idStr}.PNG`);
+        if (imgFile) {
+          const imgBuffer = await imgFile.async("nodebuffer");
+          trophy.base64Image = `data:image/png;base64,${imgBuffer.toString("base64")}`;
+        }
+      }
+
+      return res.json({ success: true, profile, trophies });
+    } catch (error: any) {
+      console.error("Erro no processamento do ZIP:", error);
+      res.status(500).json({ error: "Falha ao ler os dados do ZIP.", details: error.message });
+    }
+  });
+
