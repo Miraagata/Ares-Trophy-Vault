@@ -1,0 +1,6 @@
+{
+  "name": "Ares Trophy Vault",
+  "description": "PS3 Trophy Editor, Routine Simulator & Cross-Region Sync",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
