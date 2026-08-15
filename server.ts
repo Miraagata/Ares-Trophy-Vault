@@ -213,9 +213,16 @@ Do not include markdown blocks, just raw JSON.`;
         return res.status(400).json({ error: "Faltam arquivos obrigatórios (TROPCONF.SFM, PARAM.SFO, TROPUSR.DAT)." });
       }
 
-      const profile = parsePARAMSFO(paramsfoBuffer);
-      let trophies = parseTROPCONF(tropconfBuffer);
-      trophies = parseTROPUSR(tropusrBuffer, trophies);
+      const sfoProfile = paramsfoBuffer ? parsePARAMSFO(paramsfoBuffer) : null;
+      const parsedTropConf = parseTROPCONF(tropconfBuffer);
+
+      let profile = {
+        titleId: parsedTropConf.npcommid || sfoProfile?.titleId || "NPWR00000_00",
+        accountId: sfoProfile?.accountId || "0000000000000000",
+        title: parsedTropConf.title || sfoProfile?.title || "Unknown Game",
+      };
+
+      let trophies = parseTROPUSR(tropusrBuffer, parsedTropConf.trophies);
 
       for (const trophy of trophies) {
         if (images[trophy.id]) {
@@ -225,7 +232,13 @@ Do not include markdown blocks, just raw JSON.`;
 
       const originalUsrDat = tropusrBuffer.toString("base64");
 
-      return res.json({ success: true, profile, trophies, originalUsrDat });
+      return res.json({
+        success: true,
+        profile,
+        trophies,
+        groups: parsedTropConf.groups,
+        originalUsrDat,
+      });
     } catch (error: any) {
       console.error("Erro no processamento dos arquivos:", error);
       res.status(500).json({ error: "Falha ao ler os dados.", details: error.message });

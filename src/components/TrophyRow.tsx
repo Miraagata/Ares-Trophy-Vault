@@ -12,8 +12,8 @@ export const TrophyRow = memo(({
   renderTypeBadge 
 }: any) => {
   const isOnline = isOnlineTrophy(trophy);
-  const isUnlocked = trophy.unlocked || trophy.isUnlocked;
-  const isSynced = trophy.isSynced;
+  const isUnlocked = Boolean(trophy.unlocked ?? trophy.isUnlocked);
+  const isSynced = Boolean(trophy.synced ?? trophy.isSynced);
 
   const trophyTime = trophy.timestamp ? new Date(trophy.timestamp).getTime() : 0;
   const shutdownTime = shutdownInfo

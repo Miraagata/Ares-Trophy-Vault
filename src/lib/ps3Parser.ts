@@ -6,6 +6,7 @@ export interface ParsedTrophy {
   detail: string;
   hidden: boolean;
   type: string; // "Platinum", "Gold", "Silver", "Bronze"
+  groupId?: string;
   base64Image?: string;
   isUnlocked: boolean;
   isSynced: boolean;
@@ -21,33 +22,93 @@ export interface PlayerProfile {
 export interface ParsedSaveData {
   profile: PlayerProfile;
   trophies: ParsedTrophy[];
+  groups?: any[];
+}
+
+function decodeXmlEntities(str: string): string {
+  if (!str) return "";
+  return str
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&trade;/gi, "™")
+    .replace(/&#x2122;/gi, "™")
+    .replace(/&#8482;/gi, "™")
+    .trim();
 }
 
 /**
- * Parses TROPCONF.SFM (XML) to extract trophy metadata
+ * Parses TROPCONF.SFM (XML) to extract trophy metadata, title, and groups
  */
-export function parseTROPCONF(buffer: Buffer): any[] {
+export function parseTROPCONF(buffer: Buffer): {
+  title: string;
+  npcommid: string;
+  trophies: any[];
+  groups: any[];
+} {
   const xml = buffer.toString("utf-8");
   const trophies: any[] = [];
-  
-  // A simple regex parser for TROPCONF.SFM
-  const trophyRegex = /<trophy\s+id="(\d+)"\s+hidden="(yes|no)"\s+ttype="([A-Z])"[^>]*>([\s\S]*?)<\/trophy>/g;
-  let match;
+  const groups: any[] = [];
 
-  while ((match = trophyRegex.exec(xml)) !== null) {
-    const id = parseInt(match[1], 10);
-    const hidden = match[2] === "yes";
-    const typeChar = match[3];
-    const innerXml = match[4];
+  let title = "";
+  const titleNameMatch = xml.match(/<title-name>(.*?)<\/title-name>/is) ||
+                         xml.match(/<title_name>(.*?)<\/title_name>/is) ||
+                         xml.match(/<game-title>(.*?)<\/game-title>/is) ||
+                         xml.match(/<title>(.*?)<\/title>/is);
+  if (titleNameMatch) {
+    title = decodeXmlEntities(titleNameMatch[1]);
+  }
+
+  let npcommid = "";
+  const npcommidMatch = xml.match(/<npcommid>(.*?)<\/npcommid>/is);
+  if (npcommidMatch) {
+    npcommid = npcommidMatch[1].trim();
+  }
+
+  const groupBlockRegex = /<group\b([^>]*)>([\s\S]*?)<\/group>/gi;
+  let groupMatch;
+  while ((groupMatch = groupBlockRegex.exec(xml)) !== null) {
+    const groupAttrs = groupMatch[1];
+    const groupInner = groupMatch[2];
+    const idMatch = groupAttrs.match(/\bid=["']?(\d+)["']?/i);
+    const titleMatch = groupInner.match(/<title>(.*?)<\/title>/is);
+    const gid = idMatch ? idMatch[1] : String(groups.length);
+    const gtitle = titleMatch ? decodeXmlEntities(titleMatch[1]) : (gid === "0" ? "Base Game" : `DLC ${gid}`);
+    groups.push({ id: gid === "0" ? "default" : `group_${gid}`, title: gtitle, iconDataUrl: "", numTrophies: 0 });
+  }
+
+  if (groups.length === 0) {
+    groups.push({ id: "default", title: "Base Game", iconDataUrl: "", numTrophies: 0 });
+  }
+
+  const trophyBlockRegex = /<trophy\b([^>]*)>([\s\S]*?)<\/trophy>/gi;
+  let blockMatch;
+
+  while ((blockMatch = trophyBlockRegex.exec(xml)) !== null) {
+    const attrStr = blockMatch[1];
+    const innerXml = blockMatch[2];
+
+    const idMatch = attrStr.match(/\bid=["']?(\d+)["']?/i);
+    const hiddenMatch = attrStr.match(/\bhidden=["']?(yes|no|1|0)["']?/i);
+    const ttypeMatch = attrStr.match(/\bttype=["']?([A-Z])["']?/i) || attrStr.match(/\btype=["']?([A-Z])["']?/i);
+    const pidMatch = attrStr.match(/\bpid=["']?(\d+)["']?/i);
+
+    const id = idMatch ? parseInt(idMatch[1], 10) : trophies.length;
+    const hidden = hiddenMatch ? (hiddenMatch[1] === "yes" || hiddenMatch[1] === "1") : false;
+    const typeChar = ttypeMatch ? ttypeMatch[1].toUpperCase() : "B";
+    const pid = pidMatch ? pidMatch[1] : "0";
 
     let name = "";
     let detail = "";
 
-    const nameMatch = innerXml.match(/<name>(.*?)<\/name>/);
-    if (nameMatch) name = nameMatch[1];
+    const nameMatch = innerXml.match(/<name>(.*?)<\/name>/is);
+    if (nameMatch) name = decodeXmlEntities(nameMatch[1]);
 
-    const detailMatch = innerXml.match(/<detail>(.*?)<\/detail>/);
-    if (detailMatch) detail = detailMatch[1];
+    const detailMatch = innerXml.match(/<detail>(.*?)<\/detail>/is) || innerXml.match(/<description>(.*?)<\/description>/is);
+    if (detailMatch) detail = decodeXmlEntities(detailMatch[1]);
 
     let type = "Bronze";
     if (typeChar === "P") type = "Platinum";
@@ -55,35 +116,21 @@ export function parseTROPCONF(buffer: Buffer): any[] {
     else if (typeChar === "S") type = "Silver";
     else if (typeChar === "B") type = "Bronze";
 
-    trophies.push({ id, name, detail, hidden, type });
+    const groupId = pid === "0" ? "default" : `group_${pid}`;
+
+    trophies.push({ id, name, detail, hidden, type, groupId });
   }
 
-  return trophies;
+  return { title, npcommid, trophies, groups };
 }
 
 /**
  * Parses PARAM.SFO to extract ACCOUNT_ID and TITLE_ID
  */
 export function parsePARAMSFO(buffer: Buffer): PlayerProfile {
-  const data = buffer.toString("utf-8");
-  
-  // Helper to extract a null-terminated string following a key in PARAM.SFO
-  // This is a naive heuristic search approach appropriate for this context.
-  const extractString = (key: string): string => {
-    const idx = data.indexOf(key);
-    if (idx === -1) return "UNKNOWN";
-    
-    // Look for the next alphanumeric chunk after the key
-    // In PARAM.SFO, values are separated from keys by tables, but often we can just regex search 
-    // or look for the known length/format. 
-    // A more precise binary parsing of PARAM.SFO header/index table would be:
-    return "UNKNOWN"; 
-  };
-
-  // Precise PARAM.SFO parsing
   const magic = buffer.readUInt32LE(0);
   if (magic !== 0x46535000) { // '\0PSF'
-    return { titleId: "UNKNOWN", accountId: "UNKNOWN" };
+    return { titleId: "UNKNOWN", accountId: "UNKNOWN", title: "" };
   }
 
   const keyTableStart = buffer.readUInt32LE(0x08);
@@ -91,20 +138,18 @@ export function parsePARAMSFO(buffer: Buffer): PlayerProfile {
   const tablesEntries = buffer.readUInt32LE(0x10);
 
   let titleId = "UNKNOWN";
-  let accountId = "UNKNOWN";
-  let title = "UNKNOWN";
+  let accountId = "0000000000000000";
+  let title = "";
 
   for (let i = 0; i < tablesEntries; i++) {
     const entryOffset = 0x14 + (i * 16);
+    if (entryOffset + 16 > buffer.length) break;
+
     const keyOffset = buffer.readUInt16LE(entryOffset);
-    const dataFmt = buffer.readUInt16LE(entryOffset + 2);
     const dataLen = buffer.readUInt32LE(entryOffset + 4);
-    const dataMaxLen = buffer.readUInt32LE(entryOffset + 8);
     const dataOffset = buffer.readUInt32LE(entryOffset + 12);
 
     const actualKeyOffset = keyTableStart + keyOffset;
-    
-    // Read null-terminated string for key
     let keyEnd = actualKeyOffset;
     while (keyEnd < buffer.length && buffer[keyEnd] !== 0) {
       keyEnd++;
@@ -113,16 +158,15 @@ export function parsePARAMSFO(buffer: Buffer): PlayerProfile {
 
     if (key === "TITLE_ID" || key === "ACCOUNT_ID" || key === "TITLE") {
       const actualDataOffset = dataTableStart + dataOffset;
-      // Null-terminated string for data
       let dataEnd = actualDataOffset;
-      while (dataEnd < actualDataOffset + dataLen && buffer[dataEnd] !== 0) {
+      while (dataEnd < actualDataOffset + dataLen && dataEnd < buffer.length && buffer[dataEnd] !== 0) {
         dataEnd++;
       }
       const val = buffer.toString("utf-8", actualDataOffset, dataEnd);
-      
-      if (key === "TITLE_ID") titleId = val;
-      if (key === "ACCOUNT_ID") accountId = val;
-      if (key === "TITLE") title = val;
+
+      if (key === "TITLE_ID") titleId = val.trim();
+      if (key === "ACCOUNT_ID") accountId = val.trim();
+      if (key === "TITLE") title = val.trim();
     }
   }
 
@@ -130,14 +174,13 @@ export function parsePARAMSFO(buffer: Buffer): PlayerProfile {
 }
 
 /**
- * Helper to decode PS3 binary timestamps across all formats (Sony RTC ticks, Unix microseconds, etc.)
+ * Helper to decode PS3 binary timestamps across all formats
  */
 export function decodePs3Timestamp(timeBigInt: bigint): string | null {
   if (!timeBigInt || timeBigInt <= 0n) return null;
 
   try {
     // 1. Sony PlayStation RTC tick: microseconds since Jan 1, 0001 00:00:00 UTC
-    // 1970-01-01 in microseconds = 62135596800000000
     const SONY_EPOCH_DIFF_US = 62135596800000000n;
     if (timeBigInt > 60000000000000000n && timeBigInt < 70000000000000000n) {
       const unixMicroseconds = timeBigInt - SONY_EPOCH_DIFF_US;
@@ -175,7 +218,7 @@ export function decodePs3Timestamp(timeBigInt: bigint): string | null {
       }
     }
 
-    // 5. Windows FileTime (100ns intervals since 1601-01-01)
+    // 5. Windows FileTime
     const FILETIME_DIFF = 116444736000000000n;
     if (timeBigInt > 120000000000000000n && timeBigInt < 140000000000000000n) {
       const unixMs = Number((timeBigInt - FILETIME_DIFF) / 10000n);
@@ -191,18 +234,53 @@ export function decodePs3Timestamp(timeBigInt: bigint): string | null {
   return null;
 }
 
+function detectTableLayout(buffer: Buffer): { start: number; stride: number } | null {
+  if (buffer.length < 0x80) return null;
+  const candidateStrides = [0x60, 0x80, 0x40, 0x50, 0x70, 0x90, 0xA0];
+  const candidateStarts = [0x40, 0x60, 0x80, 0x100, 0x140, 0x180, 0x200, 0x300, 0x400];
+
+  for (const stride of candidateStrides) {
+    for (const start of candidateStarts) {
+      if (start + stride * 3 <= buffer.length) {
+        try {
+          const id0 = buffer.readInt32BE(start);
+          const id1 = buffer.readInt32BE(start + stride);
+          const id2 = buffer.readInt32BE(start + stride * 2);
+          if (id0 === 0 && id1 === 1 && id2 === 2) {
+            return { start, stride };
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+    }
+  }
+  return null;
+}
+
 /**
  * Lê o TROPUSR.DAT com busca nativa e recuperação completa de todas as informações de tempo.
  */
 export function parseTROPUSR(buffer: Buffer, trophies: any[]) {
   const results = [];
+  const layout = detectTableLayout(buffer);
 
   for (const trophy of trophies) {
-    const trophyIdBuffer = Buffer.alloc(4);
-    trophyIdBuffer.writeInt32BE(trophy.id, 0);
+    let offset = -1;
+    if (layout) {
+      const candidateOffset = layout.start + trophy.id * layout.stride;
+      if (candidateOffset + 0x20 <= buffer.length) {
+        if (buffer.readInt32BE(candidateOffset) === trophy.id) {
+          offset = candidateOffset;
+        }
+      }
+    }
 
-    // Varredura de busca do troféu no arquivo binário
-    let offset = buffer.indexOf(trophyIdBuffer, 0x40);
+    if (offset === -1) {
+      const trophyIdBuffer = Buffer.alloc(4);
+      trophyIdBuffer.writeInt32BE(trophy.id, 0);
+      offset = buffer.indexOf(trophyIdBuffer, 0x40);
+    }
 
     let isUnlocked = false;
     let isSynced = false;
@@ -210,23 +288,24 @@ export function parseTROPUSR(buffer: Buffer, trophies: any[]) {
 
     if (offset !== -1) {
       const statusOffset = offset + 0x14;
-      const primaryTimestampOffset = offset + 0x18;
-      
-      const flag = buffer.readUInt8(statusOffset);
+      const statusOffsetAlt = offset + 0x10;
+      let flag = statusOffset < buffer.length ? buffer.readUInt8(statusOffset) : 0;
+      if (flag === 0 && statusOffsetAlt < buffer.length) {
+        flag = buffer.readUInt8(statusOffsetAlt);
+      }
 
       if (flag > 0) {
         isUnlocked = true;
-        if (flag === 0x02 || flag === 0x11 || flag > 0x01) {
+        if (flag === 0x02 || flag === 0x11 || flag >= 0x02) {
           isSynced = true;
         }
 
-        // Tentar ler no offset padrão (offset + 0x18)
+        const primaryTimestampOffset = offset + 0x18;
         if (primaryTimestampOffset + 8 <= buffer.length) {
           const timeT = buffer.readBigInt64BE(primaryTimestampOffset);
           timestamp = decodePs3Timestamp(timeT);
         }
 
-        // Se não encontrou, varrer os offsets vizinhos do registro (0x10, 0x14, 0x20, 0x08)
         if (!timestamp) {
           const candidateOffsets = [offset + 0x10, offset + 0x14, offset + 0x20, offset + 0x08, offset + 0x28];
           for (const cand of candidateOffsets) {
@@ -241,7 +320,6 @@ export function parseTROPUSR(buffer: Buffer, trophies: any[]) {
           }
         }
 
-        // Se o troféu está marcado como ganho mas não possuía timestamp gravado, atribuir data válida
         if (!timestamp) {
           timestamp = new Date().toISOString();
         }
@@ -259,15 +337,32 @@ export function parseTROPUSR(buffer: Buffer, trophies: any[]) {
  */
 export function extractAllTimestampsFromDAT(buffer: Buffer) {
   const timestamps = [];
+  const layout = detectTableLayout(buffer);
 
   for (let id = 0; id <= 128; id++) {
-    const trophyIdBuffer = Buffer.alloc(4);
-    trophyIdBuffer.writeInt32BE(id, 0);
+    let offset = -1;
+    if (layout) {
+      const candidateOffset = layout.start + id * layout.stride;
+      if (candidateOffset + 0x20 <= buffer.length) {
+        if (buffer.readInt32BE(candidateOffset) === id) {
+          offset = candidateOffset;
+        }
+      }
+    }
 
-    const offset = buffer.indexOf(trophyIdBuffer, 0x40);
+    if (offset === -1) {
+      const trophyIdBuffer = Buffer.alloc(4);
+      trophyIdBuffer.writeInt32BE(id, 0);
+      offset = buffer.indexOf(trophyIdBuffer, 0x40);
+    }
+
     if (offset !== -1) {
       const statusOffset = offset + 0x14;
-      const flag = buffer.readUInt8(statusOffset);
+      const statusOffsetAlt = offset + 0x10;
+      let flag = statusOffset < buffer.length ? buffer.readUInt8(statusOffset) : 0;
+      if (flag === 0 && statusOffsetAlt < buffer.length) {
+        flag = buffer.readUInt8(statusOffsetAlt);
+      }
 
       if (flag > 0) {
         let timestamp: string | null = null;
@@ -292,7 +387,7 @@ export function extractAllTimestampsFromDAT(buffer: Buffer) {
           id,
           timestamp,
           isUnlocked: true,
-          isSynced: flag === 0x02 || flag > 0x01
+          isSynced: flag === 0x02 || flag === 0x11 || flag >= 0x02
         });
       }
     }
@@ -307,15 +402,27 @@ export function extractAllTimestampsFromDAT(buffer: Buffer) {
 export function updateTROPUSR(buffer: Buffer, trophies: any[]): Buffer {
   const newBuffer = Buffer.from(buffer);
   const SONY_EPOCH_DIFF_US = 62135596800000000n;
+  const layout = detectTableLayout(newBuffer);
   
   for (const trophy of trophies) {
     const isUnlocked = trophy.unlocked ?? trophy.isUnlocked;
     if (!isUnlocked) continue;
     
-    const trophyIdBuffer = Buffer.alloc(4);
-    trophyIdBuffer.writeInt32BE(trophy.id, 0);
+    let offset = -1;
+    if (layout) {
+      const candidateOffset = layout.start + trophy.id * layout.stride;
+      if (candidateOffset + 0x20 <= newBuffer.length) {
+        if (newBuffer.readInt32BE(candidateOffset) === trophy.id) {
+          offset = candidateOffset;
+        }
+      }
+    }
 
-    const offset = newBuffer.indexOf(trophyIdBuffer, 0x40);
+    if (offset === -1) {
+      const trophyIdBuffer = Buffer.alloc(4);
+      trophyIdBuffer.writeInt32BE(trophy.id, 0);
+      offset = newBuffer.indexOf(trophyIdBuffer, 0x40);
+    }
 
     if (offset !== -1) {
       const statusOffset = offset + 0x14;
@@ -329,7 +436,6 @@ export function updateTROPUSR(buffer: Buffer, trophies: any[]): Buffer {
       if (trophy.timestamp) {
         const dateMs = new Date(trophy.timestamp).getTime();
         if (!isNaN(dateMs)) {
-          // Gravação no padrão nativo Sony PlayStation RTC (microssegundos desde 0001-01-01)
           const sonyRtc = BigInt(dateMs) * 1000n + SONY_EPOCH_DIFF_US;
           newBuffer.writeBigInt64BE(sonyRtc, timestampOffset);
         }

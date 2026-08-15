@@ -134,6 +134,7 @@ export default function App() {
         data = {
           profile: clientResult.profile,
           trophies: clientResult.trophies,
+          groups: clientResult.groups,
           originalUsrDat: clientResult.originalUsrDatBase64,
         };
       } catch (clientErr) {
@@ -165,9 +166,11 @@ export default function App() {
         throw new Error("Não foi possível extrair a lista de troféus dos arquivos enviados.");
       }
 
-      setGameTitle(data.profile.title && data.profile.title !== "UNKNOWN" ? data.profile.title : data.profile.titleId);
-      setTitleId(data.profile.titleId);
-      setAccountId(data.profile.accountId);
+      const rawTitle = data.profile.title;
+      const displayTitle = (rawTitle && rawTitle !== "UNKNOWN" && rawTitle !== "Unknown Game") ? rawTitle : data.profile.titleId;
+      setGameTitle(displayTitle);
+      setTitleId(data.profile.titleId || "NPWR00000_00");
+      setAccountId(data.profile.accountId || "0000000000000000");
 
       const parsedTrophies = data.trophies.map((t: any) => {
         let ts = t.timestamp;
@@ -186,11 +189,20 @@ export default function App() {
           synced: Boolean(t.isSynced ?? t.synced),
           timestamp: ts || null,
           iconDataUrl: t.base64Image || t.iconDataUrl,
-          groupId: "default",
+          groupId: t.groupId || "default",
         };
       });
 
-      setGroups([{ id: "default", title: "Base Game", iconDataUrl: "", numTrophies: parsedTrophies.length }]);
+      const parsedGroups = (data.groups && data.groups.length > 0)
+        ? data.groups.map((g: any) => ({
+            id: g.id,
+            title: g.title,
+            iconDataUrl: g.iconDataUrl || "",
+            numTrophies: parsedTrophies.filter((tr: any) => tr.groupId === g.id).length,
+          }))
+        : [{ id: "default", title: "Base Game", iconDataUrl: "", numTrophies: parsedTrophies.length }];
+
+      setGroups(parsedGroups);
       setTrophies(parsedTrophies);
       setOriginalUsrDatBase64(data.originalUsrDat);
       setSelectedIds(new Set());
