@@ -143,18 +143,26 @@ export default function App() {
       setTitleId(data.profile.titleId);
       setAccountId(data.profile.accountId);
       
-      const parsedTrophies = data.trophies.map((t: any) => ({
-        id: t.id,
-        name: t.name,
-        description: t.detail,
-        hidden: t.hidden,
-        type: t.type,
-        unlocked: t.isUnlocked,
-        synced: t.isSynced,
-        timestamp: t.timestamp ? new Date(t.timestamp) : undefined,
-        iconDataUrl: t.base64Image,
-        groupId: "default",
-      }));
+      const parsedTrophies = data.trophies.map((t: any) => {
+        let ts = t.timestamp;
+        if (t.isUnlocked && !ts) {
+          ts = new Date().toISOString();
+        } else if (ts && typeof ts !== "string") {
+          ts = new Date(ts).toISOString();
+        }
+        return {
+          id: t.id,
+          name: t.name,
+          description: t.detail || t.description || "",
+          hidden: Boolean(t.hidden),
+          type: t.type || "Bronze",
+          unlocked: Boolean(t.isUnlocked),
+          synced: Boolean(t.isSynced),
+          timestamp: ts || null,
+          iconDataUrl: t.base64Image,
+          groupId: "default",
+        };
+      });
       
       setGroups([{ id: "default", title: "Base Game", iconDataUrl: "", numTrophies: parsedTrophies.length }]);
       setTrophies(parsedTrophies);

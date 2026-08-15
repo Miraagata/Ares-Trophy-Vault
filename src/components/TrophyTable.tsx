@@ -16,9 +16,9 @@ interface TrophyTableProps {
 }
 
 
-const formatLocal = (isoString: string) => {
+const formatLocal = (isoString: string | Date | undefined | null) => {
   if (!isoString) return "";
-  const d = new Date(isoString);
+  const d = typeof isoString === "string" ? new Date(isoString) : isoString instanceof Date ? isoString : new Date(isoString as any);
   if (isNaN(d.getTime())) return "";
   const pad = (n: number) => n.toString().padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
