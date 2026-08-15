@@ -4,6 +4,7 @@ import { ValidationBanner } from "./ValidationBanner";
 import { TrophyRow } from "./TrophyRow";
 import { getGameShutdownInfo, isOnlineTrophy } from "../lib/serverShutdownDb";
 import { distributeTrophies, DEFAULT_ROUTINE_CONFIG, RoutineConfig } from "../lib/routineSimulator";
+import { extractAllTimestampsFromDATClient } from "../lib/ps3ClientParser";
 
 interface TrophyTableProps {
   trophies: any[];
@@ -101,20 +102,38 @@ export const TrophyTable: React.FC<TrophyTableProps> = ({
 
     setIsCloning(true);
     try {
-      const formData = new FormData();
-      formData.append("sourceDat", file);
+      let timestamps: any[] | null = null;
 
-      const res = await fetch("/api/parse-source-dat", {
-        method: "POST",
-        body: formData,
-      });
+      // 1. Try client-side binary extraction
+      try {
+        const buffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        timestamps = extractAllTimestampsFromDATClient(bytes);
+      } catch (clientErr) {
+        console.warn("Client DAT extraction failed, falling back to server:", clientErr);
+      }
 
-      if (!res.ok) throw new Error(await res.text());
+      // 2. Server fallback if needed
+      if (!timestamps) {
+        const formData = new FormData();
+        formData.append("sourceDat", file);
 
-      const data = await res.json();
-      if (data.success && data.timestamps) {
+        const res = await fetch("/api/parse-source-dat", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success && data.timestamps) {
+            timestamps = data.timestamps;
+          }
+        }
+      }
+
+      if (timestamps && timestamps.length > 0) {
         let applied = 0;
-        for (const sourceTrophy of data.timestamps) {
+        for (const sourceTrophy of timestamps) {
           const targetTrophy = trophies.find((t) => t.id === sourceTrophy.id);
           if (targetTrophy && !targetTrophy.isSynced) {
             const sourceDate = new Date(sourceTrophy.timestamp);
@@ -132,6 +151,8 @@ export const TrophyTable: React.FC<TrophyTableProps> = ({
             offsetHours > 0 ? "+" : ""
           }${offsetHours} horas.`
         );
+      } else {
+        alert("Nenhum timestamp desbloqueado foi encontrado no TROPUSR.DAT fornecido.");
       }
     } catch (err) {
       console.error(err);

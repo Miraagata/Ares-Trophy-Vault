@@ -32,6 +32,7 @@ import {
 import { validateTrophySequence } from "./lib/sequenceValidator";
 import { useLanguage } from "./context/LanguageContext";
 import { isHighDifficultyTrophy, MIN_DIFFICULTY_GAP_MS } from "./lib/difficultyHelper";
+import { parseTrophyFilesClient, updateTropUsrClient, base64ToUint8Array } from "./lib/ps3ClientParser";
 
 export default function App() {
   const { t } = useLanguage();
@@ -120,29 +121,54 @@ export default function App() {
     }
   };
 
-  // Handlers: Upload Files
+  // Handlers: Upload Files (Client-side instant parsing with server fallback)
   const handleUploadFiles = async (files: File[]) => {
     try {
-      if (files.length === 0) return;
-      const formData = new FormData();
-      for (const file of files) {
-        formData.append("files", file);
+      if (!files || files.length === 0) return;
+
+      let data: any = null;
+
+      // 1. Try instant client-side parsing (0ms latency, works offline, never fails on network)
+      try {
+        const clientResult = await parseTrophyFilesClient(files);
+        data = {
+          profile: clientResult.profile,
+          trophies: clientResult.trophies,
+          originalUsrDat: clientResult.originalUsrDatBase64,
+        };
+      } catch (clientErr) {
+        console.warn("Client parser notice, attempting server parser:", clientErr);
       }
-      
-      const response = await fetch("/api/upload-trophy-files", {
-        method: "POST",
-        body: formData,
-      });
-      
-      if (!response.ok) {
-        throw new Error(await response.text());
+
+      // 2. Fallback to server endpoint if client parsing didn't complete
+      if (!data) {
+        const formData = new FormData();
+        for (const file of files) {
+          formData.append("files", file);
+        }
+
+        const response = await fetch("/api/upload-trophy-files", {
+          method: "POST",
+          body: formData,
+        });
+
+        const contentType = response.headers.get("content-type") || "";
+        if (!response.ok || !contentType.includes("application/json")) {
+          const errText = await response.text();
+          throw new Error(errText || "Falha ao processar arquivos no servidor.");
+        }
+
+        data = await response.json();
       }
-      
-      const data = await response.json();
+
+      if (!data || !data.trophies || !data.profile) {
+        throw new Error("Não foi possível extrair a lista de troféus dos arquivos enviados.");
+      }
+
       setGameTitle(data.profile.title && data.profile.title !== "UNKNOWN" ? data.profile.title : data.profile.titleId);
       setTitleId(data.profile.titleId);
       setAccountId(data.profile.accountId);
-      
+
       const parsedTrophies = data.trophies.map((t: any) => {
         let ts = t.timestamp;
         if (t.isUnlocked && !ts) {
@@ -156,21 +182,21 @@ export default function App() {
           description: t.detail || t.description || "",
           hidden: Boolean(t.hidden),
           type: t.type || "Bronze",
-          unlocked: Boolean(t.isUnlocked),
-          synced: Boolean(t.isSynced),
+          unlocked: Boolean(t.isUnlocked ?? t.unlocked),
+          synced: Boolean(t.isSynced ?? t.synced),
           timestamp: ts || null,
-          iconDataUrl: t.base64Image,
+          iconDataUrl: t.base64Image || t.iconDataUrl,
           groupId: "default",
         };
       });
-      
+
       setGroups([{ id: "default", title: "Base Game", iconDataUrl: "", numTrophies: parsedTrophies.length }]);
       setTrophies(parsedTrophies);
       setOriginalUsrDatBase64(data.originalUsrDat);
       setSelectedIds(new Set());
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to upload files:", err);
-      alert("Erro ao processar os arquivos. Certifique-se de que selecionou os arquivos corretos.");
+      alert("Erro ao processar os arquivos. Certifique-se de selecionar a pasta do jogo contendo TROPCONF.SFM, PARAM.SFO e TROPUSR.DAT (ou o arquivo .ZIP do conjunto).");
     }
   };
 
@@ -518,6 +544,25 @@ export default function App() {
       return;
     }
     try {
+      // 1. Try instant client-side binary generation
+      try {
+        const originalBytes = base64ToUint8Array(originalUsrDatBase64);
+        const updatedBytes = updateTropUsrClient(originalBytes, trophies);
+        const blob = new Blob([updatedBytes], { type: "application/octet-stream" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "TROPUSR.DAT";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        return;
+      } catch (clientExportErr) {
+        console.warn("Client export failed, falling back to server:", clientExportErr);
+      }
+
+      // 2. Fallback to server API
       const payloadTrophies = trophies.map(t => ({
         id: t.id,
         isUnlocked: t.unlocked,
